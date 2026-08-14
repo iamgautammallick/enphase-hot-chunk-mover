@@ -149,7 +149,23 @@ If the run stops with a move-count or runtime guard, re-run the **same command**
 
 ---
 
-## Before you run
+## When to run
+
+Monitor Atlas metrics through the month (per-shard CPU, oplog write rate, WiredTiger
+cache dirty %).
+
+**Mid-month:** run a **dry-run** while normal rollups traffic is active. In Step 3,
+check whether write load is concentrated on one or two shards (imbalance score above
+1.0×, or a shard marked `<< HOT`).
+
+- **Balanced / no hot shard** — nothing to do until the next check.
+- **Imbalance detected** — review the plan in `runs/hotmover_*_report.md`, then run
+  again with `--execute` to move hot chunks and even out the shards.
+
+Repeat execute runs (same command, up to 100 moves per night) until the dry-run shows
+the cluster is balanced, or until Atlas metrics improve.
+
+---
 
 1. Stop the native balancer: `sh.stopBalancer()` then `sh.getBalancerState()` must show stopped.
 2. Dry-run during active write traffic.
@@ -191,11 +207,22 @@ db.getSiblingDB("hotmover").runs.find().sort({started_at: -1}).limit(10)
 
 ---
 
-## Monthly cron (days 2–14)
+## Monthly schedule
+
+| When | Action |
+|------|--------|
+| Days 1–14 | Monitor metrics; optional dry-run early in the month |
+| **Mid-month (~day 14–16)** | **Dry-run** — check for shard imbalance |
+| Imbalance in dry-run | **Execute** to even out shards (supervised, off-peak) |
+| After day 21 | Execute only if metrics are still hot; migrations add load |
+| Balanced | No execute needed |
+
+Optional proactive cron (days 2–14) — only if you want scheduled execute runs without
+waiting for the mid-month dry-run:
 
 ```bash
 0 3 2-14 * * cd ~/hot-chunk-mover/enphase && \
-  MONGODB_URI='mongodb+srv://...' \
+  export MONGODB_URI='mongodb+srv://...' \
   python3 auto_oplog_hot_chunk_mover.py \
     --uri "$MONGODB_URI" \
     --ns enlighten_production.rollup.site_daily_time_series \
