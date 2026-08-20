@@ -437,6 +437,7 @@ After a guard stop, re-run the same command; history in `hotmover.runs` is appen
 
 ---
 
+## Artifacts
 
 Written under `runs/` (default):
 
