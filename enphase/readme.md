@@ -1,26 +1,30 @@
 # auto_oplog_hot_chunk_mover.py
 
-**Standalone, zero-config hot-chunk mover for Enphase rollups-3 sharded MongoDB.**
+Oplog-driven chunk rebalancer for Enphase rollups-3 (`rollup.site_daily_time_series`).
 
-Copy **one file** (`auto_oplog_hot_chunk_mover.py`) to your ops host. No companion scripts required.
+Samples update volume on each shard primary, classifies hot and cold shards from
+measured write rates, ranks chunks by aggregated oplog heat, and migrates chunks with
+`moveChunk`. Dry-run is the default; `--execute` runs the move loop under safety
+guards (move count, runtime, round cooldown).
+
+Operator guide: this document. Technical detail:
+[How it works (technical reference)](#how-it-works-technical-reference).
 
 ---
 
-## What it does
+## Overview
 
-When one shard receives far more write traffic than its peers, this tool:
+When write load concentrates on one or more shards, the tool:
 
-1. Reads each shard's oplog and measures **real write bytes per shard**
-2. Auto-detects **hot** and **cold** shards (nothing hardcoded)
-3. Ranks **whole chunks** by aggregated heat
-4. Moves the hottest chunks off hot shards with `moveChunk`
-5. Re-measures between rounds until balanced or a safety guard stops the run
-6. Writes a full audit trail: before/after snapshots, plan, results, Markdown report,
-   and one document in `hotmover.runs`
+1. Reads each shard's oplog and computes **write bytes per second** per shard
+2. Classifies **hot** (source) and **cold** (destination) shards from the cluster mean
+3. Aggregates oplog heat to **chunk** level using `config.chunks` bounds
+4. Moves ranked hot chunks off overloaded shards with `moveChunk`
+5. Re-samples between rounds until balance improves or a safety guard stops the run
+6. Writes an audit trail: JSON snapshots, plan, results, Markdown report, and a
+   record in `hotmover.runs`
 
-**Dry-run by default.** Add `--execute` only after reviewing the plan.
-
-Details: [How it works (technical reference)](#how-it-works-technical-reference)
+**Dry-run by default.** Add `--execute` only after reviewing the plan and artifacts.
 
 ---
 
@@ -38,7 +42,8 @@ Details: [How it works (technical reference)](#how-it-works-technical-reference)
 
 ## Fixed profile (production)
 
-These values are baked in. You do **not** pass them on the command line.
+Operational parameters are embedded in the script. They are not exposed as CLI flags
+in this build.
 
 | Setting | Value | Meaning |
 |---------|-------|---------|
@@ -58,12 +63,15 @@ These values are baked in. You do **not** pass them on the command line.
 
 ---
 
-## Install
+## Deployment
+
+Run from a host with Python 3.6.8+ and network access to the cluster mongos.
 
 ```bash
 mkdir -p ~/hot-chunk-mover/enphase && cd ~/hot-chunk-mover/enphase
 pip install --user "pymongo[srv]"
 mkdir -p runs
+# Place auto_oplog_hot_chunk_mover.py in this directory.
 ```
 
 ---
@@ -167,15 +175,6 @@ check whether write load is concentrated on one or two shards (imbalance score a
 Repeat execute runs (same command, up to 100 moves per night) until the dry-run shows
 the cluster is balanced, or until Atlas metrics improve.
 
-**Suggested customer email (copy/paste):**
-
-> Please monitor rollups-3 metrics through the month (per-shard CPU, oplog rate, cache
-> dirty %). Around mid-month, run a **dry-run** of `auto_oplog_hot_chunk_mover.py` during
-> normal write traffic. If the dry-run shows shard imbalance (Step 3 — one shard doing
-> more than its fair share of writes), run the tool again with **`--execute`** to move
-> hot chunks and even out the shards. If the dry-run reports balanced, no execute is
-> needed until the next check.
-
 ---
 
 ## Before you run
@@ -190,9 +189,8 @@ the cluster is balanced, or until Atlas metrics improve.
 
 ## How it works (technical reference)
 
-Read this section if you need the exact math, ranking rules, move counts, and split
-behavior. No tuning knobs in the customer script — values below are fixed in the
-production profile.
+Formulas, ranking rules, move budgets, split handling, and stop conditions for the
+embedded production profile.
 
 ### Scope
 
@@ -200,9 +198,13 @@ production profile.
 |------|-------|
 | Collection | `enlighten_production.rollup.site_daily_time_series` (override with `--ns`) |
 | Document `_id` | `{siteId}:{YYYYMM}` (e.g. `12345:202608`) |
-| Shard key | `_id` (hashed) |
-| Chunk bounds | Loaded from `config.chunks` on the mongos |
+| Shard key | `{ _id: 1 }` — **ranged** (not hashed) |
+| Chunk bounds | Loaded from `config.chunks` on the mongos; ordered by string min/max on `_id` |
 | Write signal | `local.oplog.rs` on each **shard primary** (`op: "u"`, matching `--ns`) |
+
+The collection is sharded on `_id` with **ranged** chunks (lexicographic min/max). This
+is not a hashed shard key. Month-end write spikes concentrate in chunks whose bounds
+cover the current `:YYYYMM` suffix.
 
 ### End-to-end flow
 

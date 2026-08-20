@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
-auto_oplog_hot_chunk_mover.py — standalone zero-config hot-chunk mover.
+auto_oplog_hot_chunk_mover.py — oplog-driven chunk rebalancer (Enphase rollups-3).
 
-Copy this ONE file to the customer host. No other scripts are required.
+Samples per-shard write load from the oplog, ranks hot chunks, and migrates them
+with moveChunk. Dry-run by default.
 
 Usage:
   python3 auto_oplog_hot_chunk_mover.py --uri "$MONGODB_URI" --ns <namespace>
   python3 auto_oplog_hot_chunk_mover.py --uri "$MONGODB_URI" --ns <namespace> --execute
 
-See readme_auto.md for the full operator guide.
+See readme.md for deployment, fixed production profile, and technical reference.
 """
 
 
